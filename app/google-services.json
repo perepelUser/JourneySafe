@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "913650396493",
+    "project_id": "journeysafe-17740",
+    "storage_bucket": "journeysafe-17740.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:913650396493:android:dc9d87fb39d6afaaa8db04",
+        "android_client_info": {
+          "package_name": "com.example.journeysafe"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAdFzIFIjfJMC6VptWjQjGo82HnUqOVJVY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
