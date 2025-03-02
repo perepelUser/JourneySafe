@@ -76,7 +76,7 @@ class DriverViewModel : ViewModel() {
                 
                 val activeOrders = snapshot?.documents?.mapNotNull { doc ->
                     try {
-                        TaxiOrder(
+                        val order = TaxiOrder(
                             id = doc.id,
                             userId = doc.getString("userId") ?: "",
                             pickupLocation = doc.getString("pickupLocation") ?: "",
@@ -88,21 +88,16 @@ class DriverViewModel : ViewModel() {
                             scheduledTime = doc.getLong("scheduledTime"),
                             driverId = doc.getString("driverId")
                         )
+                        Log.d(TAG, "Active order found: ${order.id}, status: ${order.status}, driverId: ${order.driverId}")
+                        order
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing active order", e)
                         null
                     }
                 } ?: emptyList()
 
-                // Обновляем активный заказ только если он действительно изменился
-                val currentActiveOrder = _activeOrder.value
-                val newActiveOrder = activeOrders.firstOrNull()
-                
-                if (currentActiveOrder?.id != newActiveOrder?.id || 
-                    currentActiveOrder?.status != newActiveOrder?.status) {
-                    _activeOrder.value = newActiveOrder
-                    Log.d(TAG, "Active order updated: ${newActiveOrder?.id}, status: ${newActiveOrder?.status}")
-                }
+                _activeOrder.value = activeOrders.firstOrNull()
+                Log.d(TAG, "Active orders updated. Count: ${activeOrders.size}, Current active order: ${_activeOrder.value?.id}")
             }
     }
 
@@ -110,6 +105,7 @@ class DriverViewModel : ViewModel() {
         ordersListener?.remove()
         ordersListener = db.collection("orders")
             .whereEqualTo("status", OrderStatus.PENDING.name)
+            .whereEqualTo("driverId", null)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
                     Log.e(TAG, "Error listening to available orders", e)
@@ -118,12 +114,7 @@ class DriverViewModel : ViewModel() {
                 
                 val orders = snapshot?.documents?.mapNotNull { doc ->
                     try {
-                        // Проверяем, что у заказа нет назначенного водителя
-                        if (doc.getString("driverId") != null) {
-                            return@mapNotNull null
-                        }
-                        
-                        TaxiOrder(
+                        val order = TaxiOrder(
                             id = doc.id,
                             userId = doc.getString("userId") ?: "",
                             pickupLocation = doc.getString("pickupLocation") ?: "",
@@ -133,8 +124,16 @@ class DriverViewModel : ViewModel() {
                             status = OrderStatus.valueOf(doc.getString("status") ?: OrderStatus.PENDING.name),
                             timestamp = doc.getLong("timestamp") ?: 0L,
                             scheduledTime = doc.getLong("scheduledTime"),
-                            driverId = null
+                            driverId = doc.getString("driverId")
                         )
+                        
+                        if (order.status == OrderStatus.PENDING && order.driverId == null) {
+                            Log.d(TAG, "Available order found: ${order.id}, status: ${order.status}")
+                            order
+                        } else {
+                            Log.d(TAG, "Skipping order ${order.id}: status=${order.status}, driverId=${order.driverId}")
+                            null
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing available order", e)
                         null
@@ -150,28 +149,52 @@ class DriverViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val currentUserId = FirebaseAuth.getInstance().currentUser?.uid
-                if (currentUserId == null) {
-                    Log.e(TAG, "No current user found")
-                    return@launch
-                }
+                    ?: throw Exception("Не удалось получить ID пользователя")
 
-                // Обновляем заказ в базе данных
-                db.collection("orders")
-                    .document(orderId)
-                    .update(
-                        mapOf(
-                            "status" to OrderStatus.ACCEPTED.name,
-                            "driverId" to currentUserId
-                        )
-                    )
+                // Сначала проверяем, нет ли у водителя активных заказов
+                val activeOrdersSnapshot = db.collection("orders")
+                    .whereEqualTo("driverId", currentUserId)
+                    .whereIn("status", listOf(OrderStatus.ACCEPTED.name, OrderStatus.IN_PROGRESS.name))
+                    .get()
                     .await()
 
-                // Перезапускаем слушатель активных заказов
-                startActiveOrderListener(currentUserId)
-                
+                if (!activeOrdersSnapshot.isEmpty) {
+                    throw Exception("У вас уже есть активный заказ")
+                }
+
+                // Проверяем существование заказа
+                val orderRef = db.collection("orders").document(orderId)
+                val orderDoc = orderRef.get().await()
+
+                if (!orderDoc.exists()) {
+                    throw Exception("Заказ не найден")
+                }
+
+                val status = orderDoc.getString("status")
+                val driverId = orderDoc.getString("driverId")
+
+                if (status != OrderStatus.PENDING.name) {
+                    throw Exception("Заказ уже не доступен (статус: $status)")
+                }
+
+                if (driverId != null) {
+                    throw Exception("Заказ уже принят другим водителем")
+                }
+
+                // Если все проверки пройдены, обновляем заказ
+                orderRef.update(mapOf(
+                    "status" to OrderStatus.ACCEPTED.name,
+                    "driverId" to currentUserId
+                )).await()
+
                 Log.d(TAG, "Order $orderId accepted by driver $currentUserId")
+
+                // После успешного обновления перезапускаем слушатели
+                startActiveOrderListener(currentUserId)
+                startAvailableOrdersListener()
             } catch (e: Exception) {
-                Log.e(TAG, "Error accepting order", e)
+                Log.e(TAG, "Error accepting order: ${e.message}", e)
+                throw e // Пробрасываем ошибку дальше для обработки в UI
             }
         }
     }

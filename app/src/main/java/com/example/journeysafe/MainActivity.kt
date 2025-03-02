@@ -63,11 +63,11 @@ class MainActivity : ComponentActivity() {
                                             } else if (!isDriver.value && currentRoute == "driver") {
                                                 navController.navigate("taxi") {
                                                     popUpTo(navController.graph.startDestinationId) { inclusive = true }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                }
+            }
+        }
+    }
+}
 
                                 NavigationBar {
                                     if (isDriver.value) {
@@ -150,7 +150,7 @@ class MainActivity : ComponentActivity() {
                                         FirebaseAuth.getInstance().signOut()
                                         Log.d("MainActivity", "Firebase sign out completed")
                                         navController.navigate("auth") {
-                                            popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                                            popUpTo(0) { inclusive = true }
                                         }
                                         Log.d("MainActivity", "Navigation to auth completed")
                                     }

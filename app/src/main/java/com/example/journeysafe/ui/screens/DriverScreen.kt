@@ -26,6 +26,11 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import java.text.SimpleDateFormat
 import java.util.*
+import android.location.Geocoder
+import android.util.Log
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,8 +44,10 @@ fun DriverScreen(
     val activeOrder by viewModel.activeOrder.collectAsState()
     var selectedOrder by remember { mutableStateOf<TaxiOrder?>(null) }
     var showMap by remember { mutableStateOf(false) }
+    var acceptError by remember { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         viewModel.loadDriverStats(driverId)
@@ -51,26 +58,44 @@ fun DriverScreen(
             onDismissRequest = { 
                 showMap = false
                 selectedOrder = null
+                acceptError = null
             },
             title = { Text("Маршрут заказа #${selectedOrder?.id?.take(8)}") },
             text = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(400.dp)
-                ) {
-                    MapView(
-                        order = selectedOrder!!,
-                        context = context
-                    )
+                Column {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(400.dp)
+                    ) {
+                        MapView(
+                            order = selectedOrder!!,
+                            context = context
+                        )
+                    }
+                    if (acceptError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = acceptError!!,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        selectedOrder?.let { viewModel.acceptOrder(it.id) }
-                        showMap = false
-                        selectedOrder = null
+                        scope.launch {
+                            try {
+                                selectedOrder?.let { viewModel.acceptOrder(it.id) }
+                                showMap = false
+                                selectedOrder = null
+                                acceptError = null
+                            } catch (e: Exception) {
+                                acceptError = e.message ?: "Ошибка при принятии заказа"
+                            }
+                        }
                     }
                 ) {
                     Text("Принять заказ")
@@ -81,6 +106,7 @@ fun DriverScreen(
                     onClick = { 
                         showMap = false
                         selectedOrder = null
+                        acceptError = null
                     }
                 ) {
                     Text("Закрыть")
@@ -171,65 +197,130 @@ private fun MapView(
     order: TaxiOrder,
     context: Context
 ) {
+    var startPoint by remember { mutableStateOf<GeoPoint?>(null) }
+    var endPoint by remember { mutableStateOf<GeoPoint?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    
+    LaunchedEffect(order) {
+        isLoading = true
+        try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val geocoder = Geocoder(context, Locale("ru", "RU"))
+                
+                // Форматируем адреса для лучшего геокодирования
+                val formattedPickupLocation = "${order.pickupLocation}, Москва"
+                val formattedDestination = "${order.destination}, Москва"
+                
+                Log.d("DriverScreen", "Geocoding start: $formattedPickupLocation")
+                startPoint = parseLocation(formattedPickupLocation, geocoder)
+                
+                Log.d("DriverScreen", "Geocoding end: $formattedDestination")
+                endPoint = parseLocation(formattedDestination, geocoder)
+            }
+        } catch (e: Exception) {
+            Log.e("DriverScreen", "Error during geocoding", e)
+        } finally {
+            isLoading = false
+        }
+    }
+    
+    if (isLoading) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+    
+    if (startPoint == null || endPoint == null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("Не удалось определить координаты адресов")
+        }
+        return
+    }
+    
     AndroidView(
         factory = { context ->
             MapView(context).apply {
                 Configuration.getInstance().load(context, context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
                 setTileSource(TileSourceFactory.MAPNIK)
-                controller.setZoom(15.0)
+                controller.setZoom(13.0)
                 setMultiTouchControls(true)
             }
         },
         modifier = Modifier.fillMaxSize(),
         update = { mapView ->
-            // Очищаем предыдущие маркеры
             mapView.overlays.clear()
 
-            // Добавляем маркер точки отправления
-            val startPoint = parseLocation(order.pickupLocation)
             val startMarker = Marker(mapView).apply {
                 position = startPoint
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                 title = "Точка отправления"
+                snippet = order.pickupLocation
                 icon = context.getDrawable(android.R.drawable.ic_menu_mylocation)
             }
             mapView.overlays.add(startMarker)
 
-            // Добавляем маркер точки назначения
-            val endPoint = parseLocation(order.destination)
             val endMarker = Marker(mapView).apply {
                 position = endPoint
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                 title = "Точка назначения"
+                snippet = order.destination
                 icon = context.getDrawable(android.R.drawable.ic_menu_myplaces)
             }
             mapView.overlays.add(endMarker)
 
-            // Центрируем карту на середине маршрута
-            val centerPoint = GeoPoint(
-                (startPoint.latitude + endPoint.latitude) / 2,
-                (startPoint.longitude + endPoint.longitude) / 2
-            )
-            mapView.controller.setCenter(centerPoint)
-
-            // Добавляем линию маршрута
-            val routeLine = Polyline().apply {
+            val routeLine = Polyline(mapView).apply {
+                outlinePaint.color = android.graphics.Color.BLUE
+                outlinePaint.strokeWidth = 5f
                 addPoint(startPoint)
                 addPoint(endPoint)
-                color = android.graphics.Color.BLUE
-                width = 5.0f
             }
             mapView.overlays.add(routeLine)
 
+            val boundingBox = routeLine.bounds
+            mapView.zoomToBoundingBox(boundingBox, true, 100)
+            
             mapView.invalidate()
         }
     )
 }
 
-private fun parseLocation(location: String): GeoPoint {
-    // В реальном приложении здесь будет парсинг реальных координат
-    // Сейчас возвращаем тестовые координаты Москвы
-    return GeoPoint(55.7558, 37.6173)
+private fun parseLocation(address: String, geocoder: Geocoder): GeoPoint? {
+    return try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val addresses = geocoder.getFromLocationName(address, 1)
+            if (!addresses.isNullOrEmpty()) {
+                val location = addresses[0]
+                Log.d("DriverScreen", "Found location for address: $address -> ${location.latitude}, ${location.longitude}")
+                Log.d("DriverScreen", "Full address: ${location.getAddressLine(0)}")
+                GeoPoint(location.latitude, location.longitude)
+            } else {
+                Log.w("DriverScreen", "Address not found: $address")
+                null
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val addresses = geocoder.getFromLocationName(address, 1)
+            if (!addresses.isNullOrEmpty()) {
+                val location = addresses[0]
+                Log.d("DriverScreen", "Found location for address: $address -> ${location.latitude}, ${location.longitude}")
+                Log.d("DriverScreen", "Full address: ${location.getAddressLine(0)}")
+                GeoPoint(location.latitude, location.longitude)
+            } else {
+                Log.w("DriverScreen", "Address not found: $address")
+                null
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("DriverScreen", "Error geocoding address: $address", e)
+        null
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
